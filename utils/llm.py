@@ -1,273 +1,189 @@
-from groq import Groq
-from dotenv import load_dotenv
-import httpx
 import os
+import httpx
+from dotenv import load_dotenv
+from openai import AzureOpenAI
 
 # ---------------- LOAD ENV ----------------
 load_dotenv()
-print("GROQ KEY LOADED:", os.getenv("GROQ_API_KEY") is not None)
-
-# ---------------- HTTP CLIENT ----------------
-http_client = httpx.Client(
-    verify=False,
-    timeout=120.0
-)
-
-# ---------------- GROQ CLIENT ----------------
-client = Groq(
-    api_key=os.getenv("GROQ_API_KEY"),
-    http_client=http_client
-)
 
 
-# ---------------- AI INSIGHT ----------------
-def ask_llm(question, result):
+# ---------------- AZURE OPENAI CLIENT ----------------
+def get_azure_openai_client():
+
+    api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION")
+
+    if not api_key:
+        raise Exception("AZURE_OPENAI_API_KEY not found in .env file.")
+
+    if not endpoint:
+        raise Exception("AZURE_OPENAI_ENDPOINT not found in .env file.")
+
+    if not api_version:
+        raise Exception("AZURE_OPENAI_API_VERSION not found in .env file.")
+
+    # Temporary workaround for corporate SSL inspection.
+    # Proper fix should be using company root CA certificate.
+    http_client = httpx.Client(
+        verify=False,
+        timeout=60
+    )
+
+    client = AzureOpenAI(
+        api_key=api_key,
+        azure_endpoint=endpoint,
+        api_version=api_version,
+        http_client=http_client
+    )
+
+    return client
+
+
+# ---------------- GET DEPLOYMENT NAME ----------------
+def get_deployment_name():
+
+    deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+
+    if not deployment_name:
+        raise Exception("AZURE_OPENAI_DEPLOYMENT_NAME not found in .env file.")
+
+    return deployment_name
+
+
+# ---------------- BUSINESS INSIGHT GENERATION ----------------
+def ask_llm(question, data_context):
 
     try:
 
-        if question is None:
-
-            question = ""
-
-        if result is None:
-
-            result = ""
+        client = get_azure_openai_client()
+        deployment_name = get_deployment_name()
 
         prompt = f"""
-You are an expert business data analyst.
+You are a business analytics assistant.
 
-USER QUESTION:
+Use only the provided result data.
+Do not hallucinate.
+Do not mention SQL, Python, dataframe, code, or implementation details.
+Give a concise business insight in 2-3 lines.
+If the result is limited, mention that briefly.
+
+User question:
 {question}
 
-ANALYTICAL RESULT:
-{result}
-
-TASK:
-1. Give a direct answer based only on the analytical result.
-2. Give a concise business insight.
-3. Explain what this means in practical business terms.
-4. Keep response professional and short.
-5. If result is not enough, say that available data is insufficient.
-
-IMPORTANT:
-- Do not mention code.
-- Do not mention pandas.
-- Do not mention dataframe.
-- Do not invent facts.
-- Do not assume unavailable business meaning.
+Result data:
+{data_context}
 """
 
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=deployment_name,
             messages=[
+                {
+                    "role": "system",
+                    "content": "You generate concise and accurate business insights from analytics results."
+                },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            temperature=0.2
+            temperature=0.2,
+            max_tokens=250
         )
 
-        return response.choices[0].message.content
+        return response.choices[0].message.content.strip()
 
     except Exception as e:
 
-        return f"LLM Error: {e}"
+        print("Azure OpenAI insight error:", e)
+
+        return None
 
 
-# ---------------- PANDAS CODE GENERATOR ----------------
+# ---------------- PANDAS CODE FALLBACK GENERATION ----------------
 def generate_pandas_code(
     question,
     columns,
-    selected_sheet="",
+    selected_sheet,
     conversation_context="",
     active_filters=None
 ):
 
     try:
 
-        if question is None:
-
-            question = ""
-
-        if columns is None:
-
-            columns = []
+        client = get_azure_openai_client()
+        deployment_name = get_deployment_name()
 
         if active_filters is None:
-
             active_filters = {}
 
-        if conversation_context is None:
-
-            conversation_context = ""
-
-        available_columns = columns[:50]
+        columns_text = "\n".join(
+            [
+                f"- {col}"
+                for col in columns
+            ]
+        )
 
         prompt = f"""
-You are an expert Python pandas analytics engine.
+You are a Python pandas code generator.
 
-DATAFRAME NAME:
-df
+Rules:
+1. Use only the dataframe named df.
+2. Use only these available columns:
+{columns_text}
 
-AVAILABLE COLUMNS:
-{available_columns}
+3. Store the final answer in a variable named result.
+4. Do not import libraries.
+5. Do not read or write files.
+6. Do not use columns that are not listed.
+7. Return only valid Python code.
+8. If aggregation is needed, create a dataframe result.
+9. If the user asks for top/ranking, use value_counts or groupby.
+10. If the user asks for unique count, use nunique.
+11. Do not explain the code.
 
-CURRENT SHEET OR VIEW:
+Sheet/View:
 {selected_sheet}
 
-PREVIOUS CONVERSATION:
-{conversation_context}
-
-ACTIVE FILTERS:
+Active filters:
 {active_filters}
 
-USER QUESTION:
+Conversation context:
+{conversation_context}
+
+User question:
 {question}
-
-TASK:
-Generate executable pandas code that answers the user question.
-
-STRICT OUTPUT RULES:
-- Return only executable pandas code.
-- No markdown.
-- No explanation.
-- No imports.
-- No print statements.
-- Final output must be stored in variable result.
-- Use only exact columns from AVAILABLE COLUMNS.
-- Never invent columns.
-- If the question cannot be answered using AVAILABLE COLUMNS, return:
-result = "Requested information is not available in the selected data."
-
-COLUMN RULES:
-- Column names may contain spaces.
-- Always use df["Column Name"] syntax.
-- Do not assume columns unless present.
-- Do not use unavailable columns.
-
-ANALYTICS RULES:
-1. Count questions:
-Use len(df), count(), nunique(), or groupby().size().
-
-2. Top / most common / highest questions:
-Use value_counts(), groupby().size(), or sort_values(descending).
-
-3. Bottom / lowest / least questions:
-Use ascending sort.
-
-4. Group-wise analysis:
-Use:
-result = df.groupby("Column").size().reset_index(name="Count")
-
-5. Numeric aggregation:
-Use sum(), mean(), median(), min(), max() only on numeric columns.
-
-6. Text/categorical columns:
-Never use sum() on text columns.
-
-7. Filters:
-Use:
-df["Column"].astype(str).str.lower().str.contains("value", na=False)
-
-8. Missing values:
-Use isnull(), notnull(), isna(), notna().
-
-9. Unique count:
-Use nunique().
-
-10. Duplicate analysis:
-Use duplicated() or value_counts().
-
-11. Chart questions:
-Return a small aggregated dataframe suitable for charting.
-
-RESULT FORMAT:
-If returning scalar value, wrap it in DataFrame.
-
-Example:
-result = pd.DataFrame({{"Total Records": [len(df)]}})
-
-EXAMPLES:
-
-Question:
-count records
-
-Code:
-result = pd.DataFrame(
-    {{
-        "Total Records": [len(df)]
-    }}
-)
-
-Question:
-top 5 values of a column
-
-Code:
-result = (
-    df["Column Name"]
-    .value_counts()
-    .head(5)
-    .reset_index()
-)
-result.columns = [
-    "Column Name",
-    "Count"
-]
-
-Question:
-missing values by column
-
-Code:
-result = (
-    df.isnull()
-    .sum()
-    .reset_index()
-)
-result.columns = [
-    "Column",
-    "Missing Values"
-]
-result = result.sort_values(
-    by="Missing Values",
-    ascending=False
-)
-
-FINAL REMINDER:
-Return only pandas code.
-The code must set variable result.
 """
 
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=deployment_name,
             messages=[
+                {
+                    "role": "system",
+                    "content": "You write safe pandas code only. Return only executable Python code."
+                },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            temperature=0.03
+            temperature=0.1,
+            max_tokens=500
         )
 
-        code = response.choices[0].message.content
+        code = response.choices[0].message.content.strip()
 
         code = (
-            code.replace("```python", "")
+            code
+            .replace("```python", "")
             .replace("```", "")
-            .replace("`", "")
             .strip()
         )
-
-        if "result" not in code:
-
-            code = '''
-result = "Unable to generate a valid query for the selected data."
-'''
 
         return code
 
     except Exception as e:
 
-        return f'''
-result = "LLM generation failed: {str(e)}"
-'''
+        print("Azure OpenAI pandas fallback error:", e)
+
+        return "result = 'LLM fallback is currently unavailable.'"

@@ -27,6 +27,12 @@ st.set_page_config(
     page_icon="📊"
 )
 
+# ---------------- CONSTANTS ----------------
+DEFAULT_DATABRICKS_VIEW = (
+    "gold_tt_prod.gb_dw.upgrade_export_report_view"
+)
+
+
 # ---------------- SAFE DATAFRAME RENDER ----------------
 def render_dataframe(dataframe):
 
@@ -108,6 +114,7 @@ if "current_chat" not in app_state:
 
     app_state["current_chat"] = None
 
+
 # ---------------- SIDEBAR ----------------
 st.sidebar.title("AI Analytics Workspace")
 
@@ -120,6 +127,7 @@ uploaded_file = st.sidebar.file_uploader(
     "Upload Excel File",
     type=["xlsx", "xls"]
 )
+
 
 # ---------------- SAVE UPLOADED EXCEL ----------------
 if uploaded_file is not None:
@@ -148,6 +156,7 @@ if uploaded_file is not None:
     app_state["current_workspace"] = uploaded_file.name
 
     save_state(app_state)
+
 
 # ---------------- WORKSPACE SETUP ----------------
 if data_source == "Excel":
@@ -182,15 +191,15 @@ if data_source == "Excel":
 
 else:
 
-    default_view = "gold_tt_dev.gb_dw.upgrade_export_report_view"
-
-    databricks_workspace_key = f"databricks::{default_view}"
+    databricks_workspace_key = (
+        f"databricks::{DEFAULT_DATABRICKS_VIEW}"
+    )
 
     if databricks_workspace_key not in app_state["workspaces"]:
 
         app_state["workspaces"][databricks_workspace_key] = {
             "file_path": "",
-            "view_name": default_view,
+            "view_name": DEFAULT_DATABRICKS_VIEW,
             "chats": {},
             "saved_columns": []
         }
@@ -204,6 +213,7 @@ else:
     app_state["current_workspace"] = databricks_workspace_key
 
     save_state(app_state)
+
 
 # ---------------- LOAD DATA / SCHEMA ----------------
 try:
@@ -229,7 +239,7 @@ try:
             "Enter Databricks View",
             value=workspace.get(
                 "view_name",
-                "gold_tt_dev.gb_dw.upgrade_export_report_view"
+                DEFAULT_DATABRICKS_VIEW
             )
         )
 
@@ -311,7 +321,7 @@ except Exception as e:
     ):
 
         st.error(
-            "Databricks authentication failed. Please check DATABRICKS_TOKEN in the .env file and make sure it is the same valid token/password that worked in DBeaver. After updating it, restart Streamlit."
+            "Databricks authentication failed. Please check DATABRICKS_TOKEN in the .env file and make sure it is valid. After updating it, restart Streamlit."
         )
 
     elif (
@@ -320,7 +330,7 @@ except Exception as e:
     ):
 
         st.error(
-            "Databricks SSL certificate verification failed. Please check Simba ODBC SSL/certificate settings or corporate network certificate configuration."
+            "Databricks SSL certificate verification failed. Please check network/certificate settings."
         )
 
     else:
@@ -331,6 +341,7 @@ except Exception as e:
 
     st.stop()
 
+
 # ---------------- EMPTY CHECK ----------------
 if df.empty and data_source != "Databricks":
 
@@ -339,6 +350,7 @@ if df.empty and data_source != "Databricks":
     )
 
     st.stop()
+
 
 # ---------------- CLEAN COLUMNS ----------------
 df = df.loc[
@@ -350,6 +362,7 @@ df = df.loc[
     :,
     ~df.columns.duplicated()
 ]
+
 
 # ---------------- CLEAN DATA FOR EXCEL ONLY ----------------
 if data_source != "Databricks":
@@ -387,6 +400,7 @@ if data_source != "Databricks":
 
             pass
 
+
 # ---------------- SCHEMA ----------------
 schema = detect_schema(df)
 
@@ -394,6 +408,7 @@ numeric_columns = schema["numeric"]
 categorical_columns = schema["categorical"]
 date_columns = schema["date"]
 binary_columns = schema["binary"]
+
 
 # ---------------- CHAT INIT ----------------
 if "chats" not in workspace:
@@ -448,6 +463,7 @@ chat_history = chat_data["chat_history"]
 query_history = chat_data["query_history"]
 active_filters = chat_data["active_filters"]
 
+
 # ---------------- HEADER ----------------
 st.title("AI Analytics Copilot")
 
@@ -462,6 +478,7 @@ st.write(
 st.write(
     f"### Chat: {selected_chat}"
 )
+
 
 # ---------------- CONTROLS ----------------
 st.sidebar.title("⚙️ Controls")
@@ -478,6 +495,7 @@ show_profile = st.sidebar.checkbox(
     "📊 Data Profile"
 )
 
+
 # ---------------- HISTORY ----------------
 st.sidebar.subheader("🕘 Query History")
 
@@ -491,6 +509,7 @@ else:
 
     st.sidebar.write("No queries yet")
 
+
 # ---------------- FILTERS ----------------
 st.sidebar.subheader("🎯 Active Filters")
 
@@ -503,6 +522,7 @@ if active_filters:
 else:
 
     st.sidebar.write("No active filters")
+
 
 # ---------------- DATA PREVIEW ----------------
 if show_data:
@@ -518,6 +538,7 @@ if show_data:
     render_dataframe(
         df.head(50)
     )
+
 
 # ---------------- PROFILE ----------------
 if show_profile:
@@ -550,6 +571,7 @@ if show_profile:
         int(df.isnull().sum().sum())
     )
 
+
 # ---------------- SHOW SCHEMA ----------------
 if show_schema:
 
@@ -566,6 +588,7 @@ if show_schema:
 
     st.write("### Binary Columns")
     st.write(binary_columns)
+
 
 # ---------------- HELPERS ----------------
 def is_safe_code(code):
@@ -750,6 +773,32 @@ def run_dynamic_query(question):
         "show columns",
         "list columns"
     ]:
+
+        if data_source == "Databricks" and not columns:
+
+            with st.spinner(
+                "Loading Databricks schema..."
+            ):
+
+                loaded_columns = get_databricks_columns(
+                    view_name
+                )
+
+            if loaded_columns:
+
+                schema_cache_key = f"schema_{view_name}"
+
+                st.session_state[schema_cache_key] = loaded_columns
+
+                workspace["saved_columns"] = loaded_columns
+
+                save_state(app_state)
+
+                return pd.DataFrame(
+                    {
+                        "Columns": loaded_columns
+                    }
+                )
 
         return pd.DataFrame(
             {
@@ -949,6 +998,7 @@ Return ONLY corrected pandas code.
 
     return result
 
+
 # ---------------- DISPLAY CHAT ----------------
 for idx, chat in enumerate(
     chat_history
@@ -1036,7 +1086,7 @@ if question:
 
             result = (
                 "Databricks authentication failed. "
-                "Please check DATABRICKS_TOKEN in the .env file and make sure it is the same valid token/password that worked in DBeaver. "
+                "Please check DATABRICKS_TOKEN in the .env file and make sure it is valid. "
                 "After updating it, restart Streamlit."
             )
 
@@ -1047,7 +1097,7 @@ if question:
 
             result = (
                 "Databricks SSL certificate verification failed. "
-                "Please check Simba ODBC SSL/certificate settings or corporate network certificate configuration."
+                "Please check network/certificate settings."
             )
 
         else:
@@ -1120,7 +1170,7 @@ if question:
 
                     insight = (
                         f"Dataset contains "
-                        f"{len(df.columns)} columns."
+                        f"{len(result)} columns."
                     )
 
                     st.info(insight)
